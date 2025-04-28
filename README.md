@@ -85,7 +85,7 @@ The server will be available at `http://localhost:5000`
 2. Connect your GitHub repository
 3. Configure the build settings:
    - Build Command: `npm install`
-   - Start Command: `npm start`
+   - Start Command: `node src/app.js`
 4. Add environment variables:
    - `PORT`: 5000
    - `DATABASE_URL`: Your PostgreSQL database URL
