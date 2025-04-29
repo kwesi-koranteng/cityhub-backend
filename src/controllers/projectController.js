@@ -225,7 +225,7 @@ const getProjects = async (req, res) => {
     const projects = result.rows.map(project => ({
       ...project,
       thumbnail: project.thumbnail || defaultThumbnails[Math.floor(Math.random() * defaultThumbnails.length)],
-      files: project.files ? JSON.parse(project.files) : null,
+      files: project.files ? (typeof project.files === 'string' ? JSON.parse(project.files) : project.files) : null,
       tags: Array.isArray(project.tags) ? project.tags : []
     }));
 
