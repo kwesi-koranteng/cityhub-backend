@@ -3,18 +3,19 @@ const { Pool } = pkg;
 import dotenv from 'dotenv';
 dotenv.config();
 
+// --- Updated Pool creation ---
 const pool = new Pool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT,
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false,
+  },
 });
 
 // Export ES module style
 export const query = (text, params) => pool.query(text, params);
 
-export const API_BASE_URL = "http://localhost:5000/api";
+// --- Update API base URL for production if needed ---
+export const API_BASE_URL = process.env.API_BASE_URL || "http://localhost:5000/api";
 
 // Example using fetch
 const signup = async (name, email, password) => {
