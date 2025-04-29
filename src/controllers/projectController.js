@@ -14,7 +14,7 @@ const getFullUrl = (filePath) => {
   // Convert backslashes to forward slashes and remove any leading slashes
   const cleanPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
   // Ensure we're using the correct base URL with proper path separation
-  return `http://localhost:5000/uploads/${cleanPath}`;
+  return `https://cityhub-backend.onrender.com/uploads/${cleanPath}`;
 };
 
 // Helper function to validate image URL
@@ -162,20 +162,6 @@ const getProjects = async (req, res) => {
   try {
     console.log('Fetching projects with filters:', req.query);
     
-    // First, verify the user exists (optional: skip if not needed for public endpoints)
-    let userId = null;
-    let userRole = null;
-    if (req.user && req.user.id) {
-      const userCheck = await query(
-        'SELECT id, name, email, role FROM users WHERE id = $1',
-        [req.user.id]
-      );
-      if (userCheck.rows.length > 0) {
-        userId = userCheck.rows[0].id;
-        userRole = userCheck.rows[0].role;
-      }
-    }
-    
     let queryString = `
       SELECT 
         p.*,
@@ -215,7 +201,7 @@ const getProjects = async (req, res) => {
     }
 
     // Only show approved projects for non-admin users
-    if (userRole !== 'admin') {
+    if (!req.user || req.user.role !== 'admin') {
       queryString += ` AND p.status = 'approved'`;
     }
 
@@ -236,50 +222,16 @@ const getProjects = async (req, res) => {
     console.log('Query result:', result.rows);
     
     // Format the response to include full URLs and author information
-    const projects = result.rows.map(project => {
-      // Defensive: ensure all fields are present and valid
-      let tags = [];
-      if (Array.isArray(project.tags)) {
-        tags = project.tags;
-      } else if (typeof project.tags === 'string') {
-        try {
-          tags = JSON.parse(project.tags);
-        } catch {
-          tags = [];
-        }
-      } else if (project.tags == null) {
-        tags = [];
-      }
-      let files = null;
-      try {
-        files = project.files ? JSON.parse(project.files) : null;
-      } catch {
-        files = null;
-      }
-      return {
-        id: project.id,
-        title: project.title || '',
-        description: project.description || '',
-        thumbnail: project.thumbnail || '',
-        files,
-        tags,
-        createdAt: project.created_at || project.createdAt || '',
-        videoUrl: project.video_url || '',
-        category: project.category || '',
-        academicYear: project.academic_year || '',
-        status: project.status || '',
-        author: {
-          id: project.author_id || '',
-          name: project.author_name || 'Unknown Author',
-          email: project.author_email || ''
-        }
-      };
-    });
+    const projects = result.rows.map(project => ({
+      ...project,
+      thumbnail: project.thumbnail || defaultThumbnails[Math.floor(Math.random() * defaultThumbnails.length)],
+      files: project.files ? JSON.parse(project.files) : null,
+      tags: Array.isArray(project.tags) ? project.tags : []
+    }));
 
-    console.log('Formatted projects:', projects);
     res.json(projects);
   } catch (error) {
-    console.error('Get projects error:', error);
+    console.error('Error fetching projects:', error);
     res.status(500).json({ message: 'Error fetching projects', error: error.message });
   }
 };
