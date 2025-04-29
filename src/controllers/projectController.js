@@ -11,10 +11,18 @@ const defaultThumbnails = [
 // Helper function to get full URL for uploaded files
 const getFullUrl = (filePath) => {
   if (!filePath) return null;
-  // Convert backslashes to forward slashes and remove any leading slashes
+  
+  // If the file is already a URL (from production), return it as is
+  if (filePath.startsWith('http')) {
+    return filePath;
+  }
+  
+  // For local development, convert file path to URL
   const cleanPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
-  // Ensure we're using the correct base URL with proper path separation
-  return `https://cityhub-backend.onrender.com/uploads/${cleanPath}`;
+  const baseUrl = process.env.NODE_ENV === 'production' 
+    ? process.env.API_BASE_URL.replace('/api', '')
+    : 'http://localhost:5000';
+  return `${baseUrl}/uploads/${cleanPath}`;
 };
 
 // Helper function to validate image URL
@@ -42,24 +50,61 @@ const createProject = async (req, res) => {
     console.log('Creating project with data:', {
       body: req.body,
       files: req.files,
-      user: req.user
+      user: req.user,
+      headers: req.headers
     });
 
+    // Validate user
+    if (!req.user || !req.user.id) {
+      console.error('No user found in request');
+      return res.status(401).json({ 
+        message: 'User not authenticated',
+        error: 'Authentication required'
+      });
+    }
+
+    // Extract and validate required fields
     const { title, description, category, academicYear, tags, videoUrl, thumbnail } = req.body;
     
+    // Log the raw request body for debugging
+    console.log('Raw request body:', req.body);
+
     // Handle project files separately
-    const projectFiles = req.files?.projectFiles || []; // Multiple project files
+    const projectFiles = req.files || []; // Multiple project files
 
     console.log('Processed files:', {
-      projectFiles: projectFiles
+      projectFiles: projectFiles,
+      fileCount: projectFiles.length,
+      fileNames: projectFiles.map(f => f.originalname)
     });
 
     // Process project files (if any)
-    const files = projectFiles.map(file => ({
-      name: file.originalname,
-      url: getFullUrl(file.path),
-      type: file.mimetype
-    }));
+    const files = projectFiles.map(file => {
+      try {
+        // In production, we'll store the file data directly
+        if (process.env.NODE_ENV === 'production') {
+          return {
+            name: file.originalname,
+            type: file.mimetype,
+            data: file.buffer.toString('base64') // Store file content as base64
+          };
+        }
+        // In development, store the file path
+        return {
+          name: file.originalname,
+          url: getFullUrl(file.path),
+          type: file.mimetype
+        };
+      } catch (error) {
+        console.error('Error processing file:', {
+          file: file.originalname,
+          error: error.message
+        });
+        throw error;
+      }
+    });
+
+    console.log('Processed files data:', files);
 
     // Allow projects without a thumbnail. Only validate if provided and not empty.
     let finalThumbnail = thumbnail;
@@ -67,7 +112,7 @@ const createProject = async (req, res) => {
       if (!finalThumbnail.trim().startsWith('http')) {
         return res.status(400).json({
           message: 'Please provide a valid image URL for the thumbnail.',
-          field: 'thumbnail'
+          error: 'Invalid thumbnail URL'
         });
       }
       finalThumbnail = finalThumbnail.trim();
@@ -75,11 +120,12 @@ const createProject = async (req, res) => {
       finalThumbnail = null;
     }
 
-    // Ensure required fields are present
+    // Ensure required fields are present and not empty
     if (!title || !description || !category || !academicYear) {
       console.error('Missing required fields:', { title, description, category, academicYear });
       return res.status(400).json({ 
         message: 'Title, description, category, and academic year are required.',
+        error: 'Missing required fields',
         missingFields: {
           title: !title,
           description: !description,
@@ -89,156 +135,299 @@ const createProject = async (req, res) => {
       });
     }
 
+    // Trim all string fields
+    const trimmedTitle = title.trim();
+    const trimmedDescription = description.trim();
+    const trimmedCategory = category.trim();
+    const trimmedAcademicYear = academicYear.trim();
+    const trimmedVideoUrl = videoUrl ? videoUrl.trim() : null;
+
     // Parse tags from JSON string
     let parsedTags = [];
     try {
-      parsedTags = tags ? JSON.parse(tags) : [];
+      // Check if tags is already an array
+      if (Array.isArray(tags)) {
+        parsedTags = tags;
+      } else if (typeof tags === 'string') {
+        // Try to parse as JSON if it's a string
+        parsedTags = JSON.parse(tags);
+      }
+      
+      // Ensure parsedTags is an array
+      if (!Array.isArray(parsedTags)) {
+        throw new Error('Tags must be an array');
+      }
+      
       console.log('Parsed tags:', parsedTags);
     } catch (error) {
       console.error('Error parsing tags:', error);
-      return res.status(400).json({ message: 'Invalid tags format' });
+      return res.status(400).json({ 
+        message: 'Invalid tags format',
+        error: error.message
+      });
     }
 
     // Format arrays for PostgreSQL
     const filesArray = files.length > 0 ? files : null;
     const tagsArray = parsedTags.length > 0 ? parsedTags : [];
 
+    // Set initial status to 'pending'
+    const initialStatus = 'pending';
+    console.log('Setting initial project status to:', initialStatus);
+
     // Prepare the query values
     const queryValues = [
-      title,
-      description,
-      finalThumbnail || null,  // Use final thumbnail URL
-      req.user.id,  // Assuming the user ID is attached to req.user
-      category,
-      academicYear,
-      'pending',  // Default status for new projects
-      filesArray ? JSON.stringify(filesArray) : null,  // Store files as JSON
-      tagsArray,  // Store tags as VARCHAR array
-      videoUrl || null
+      trimmedTitle,
+      trimmedDescription,
+      finalThumbnail,
+      req.user.id,
+      trimmedCategory,
+      trimmedAcademicYear,
+      initialStatus,
+      filesArray ? JSON.stringify(filesArray) : null,
+      tagsArray,
+      trimmedVideoUrl
     ];
 
     console.log('Query values:', queryValues);
 
-    // Insert project into the database
-    const result = await query(
-      `INSERT INTO projects 
-       (title, description, thumbnail, author_id, category, academic_year, status, files, tags, video_url, created_at) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP) 
-       RETURNING *`,
-      queryValues
-    );
+    try {
+      // Log the SQL query for debugging
+      const queryText = `INSERT INTO projects 
+         (title, description, thumbnail, author_id, category, academic_year, status, files, tags, video_url, created_at) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP) 
+         RETURNING *`;
+      console.log('Executing query:', queryText);
+      console.log('With values:', queryValues);
 
-    // Transform the response to include full URLs
-    const project = {
-      ...result.rows[0],
-      thumbnail: result.rows[0].thumbnail,  // Thumbnail is already a URL
-      files: result.rows[0].files ? JSON.parse(result.rows[0].files) : null,
-      tags: result.rows[0].tags || []  // Tags are now a native array
-    };
+      // Insert project into the database
+      const result = await query(queryText, queryValues);
 
-    console.log('Project created successfully:', project);
+      console.log('Database insert result:', result);
 
-    res.status(201).json({
-      message: 'Project created successfully',
-      project
-    });
+      if (!result.rows || result.rows.length === 0) {
+        throw new Error('No rows returned from insert');
+      }
+
+      // Transform the response to include full URLs
+      const project = {
+        ...result.rows[0],
+        thumbnail: result.rows[0].thumbnail,
+        files: result.rows[0].files ? JSON.parse(result.rows[0].files) : null,
+        tags: result.rows[0].tags || []
+      };
+
+      console.log('Project created successfully:', project);
+
+      // Verify the project was actually inserted
+      const verifyResult = await query('SELECT * FROM projects WHERE id = $1', [project.id]);
+      console.log('Verification query result:', verifyResult.rows);
+
+      res.status(201).json({
+        message: 'Project created successfully',
+        project
+      });
+    } catch (dbError) {
+      console.error('Database error:', {
+        message: dbError.message,
+        code: dbError.code,
+        detail: dbError.detail,
+        hint: dbError.hint,
+        where: dbError.where
+      });
+      
+      // Create a serializable error object
+      const errorResponse = {
+        message: 'Error creating project',
+        error: dbError.message,
+        code: dbError.code,
+        detail: dbError.detail
+      };
+      
+      res.status(500).json(errorResponse);
+    }
   } catch (error) {
     console.error('Create project error:', error);
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      code: error.code
-    });
-    res.status(500).json({ 
+    
+    // Create a serializable error object
+    const errorResponse = {
       message: 'Error creating project',
       error: error.message,
-      details: error.code
-    });
+      code: error.code,
+      detail: error.detail
+    };
+    
+    res.status(500).json(errorResponse);
   }
 };
 
 // Get all projects (with filters)
 const getProjects = async (req, res) => {
   try {
-    console.log('Fetching projects with filters:', req.query);
+    console.log('=== getProjects called ===');
+    console.log('Request query:', req.query);
+    console.log('User:', req.user ? 'Authenticated' : 'Not authenticated');
     
+    // First, verify database connection
+    try {
+      const connectionTest = await query('SELECT NOW() as current_time');
+      console.log('Database connection verified:', connectionTest.rows[0].current_time);
+    } catch (error) {
+      console.error('Database connection error:', error);
+      return res.status(500).json({ 
+        message: 'Database connection error',
+        error: error.message
+      });
+    }
+    
+    // Check project status distribution
+    const statusCheck = await query(`
+      SELECT status, COUNT(*) as count 
+      FROM projects 
+      GROUP BY status
+    `);
+    console.log('Project status distribution:', statusCheck.rows);
+    
+    const { status, page = 1, limit = 10 } = req.query;
+    const offset = (page - 1) * limit;
+    
+    // Build the base query
     let queryString = `
       SELECT 
-        p.*,
+        p.id,
+        p.title,
+        p.description,
+        p.thumbnail,
+        p.category,
+        p.academic_year,
+        p.status,
+        p.files,
+        p.tags,
+        p.video_url,
+        p.created_at,
+        p.updated_at,
         u.name as author_name,
         u.email as author_email
       FROM projects p
       LEFT JOIN users u ON p.author_id = u.id
-      WHERE 1=1
     `;
-    const values = [];
-    let valueIndex = 1;
-
-    // Add filters
-    if (req.query.search) {
-      queryString += ` AND (p.title ILIKE $${valueIndex} OR p.description ILIKE $${valueIndex})`;
-      values.push(`%${req.query.search}%`);
-      valueIndex++;
-    }
-
-    if (req.query.tags) {
-      const tags = Array.isArray(req.query.tags) ? req.query.tags : [req.query.tags];
-      queryString += ` AND p.tags && $${valueIndex}`;
-      values.push(tags);
-      valueIndex++;
-    }
-
-    if (req.query.category) {
-      queryString += ` AND p.category = $${valueIndex}`;
-      values.push(req.query.category);
-      valueIndex++;
-    }
-
-    if (req.query.academicYear) {
-      queryString += ` AND p.academic_year = $${valueIndex}`;
-      values.push(req.query.academicYear);
-      valueIndex++;
-    }
-
-    // Only show approved projects for non-admin users
-    if (!req.user || req.user.role !== 'admin') {
-      queryString += ` AND p.status = 'approved'`;
-    }
-
-    // Add status filter if provided
-    if (req.query.status) {
-      queryString += ` AND p.status = $${valueIndex}`;
-      values.push(req.query.status);
-      valueIndex++;
-    }
-
-    // Add order by created_at desc
-    queryString += ` ORDER BY p.created_at DESC`;
-
-    console.log('Executing query:', queryString);
-    console.log('With values:', values);
-
-    const result = await query(queryString, values);
-    console.log('Query result:', result.rows);
     
-    // Format the response to include full URLs and author information
-    const projects = result.rows.map(project => ({
-      ...project,
-      thumbnail: project.thumbnail || defaultThumbnails[Math.floor(Math.random() * defaultThumbnails.length)],
-      files: project.files ? (typeof project.files === 'string' ? JSON.parse(project.files) : project.files) : null,
-      tags: Array.isArray(project.tags) ? project.tags : []
-    }));
-
+    const values = [];
+    let whereClauses = [];
+    
+    // If user is authenticated, they can see all projects
+    // If not authenticated, they can only see approved projects
+    if (!req.user) {
+      whereClauses.push('p.status = $1');
+      values.push('approved');
+    } else if (status) {
+      whereClauses.push('p.status = $1');
+      values.push(status);
+    }
+    
+    if (whereClauses.length > 0) {
+      queryString += ' WHERE ' + whereClauses.join(' AND ');
+    }
+    
+    queryString += ' ORDER BY p.created_at DESC LIMIT $' + (values.length + 1) + ' OFFSET $' + (values.length + 2);
+    values.push(limit, offset);
+    
+    console.log('Final query:', queryString);
+    console.log('Query values:', values);
+    
+    // Execute the query
+    const result = await query(queryString, values);
+    console.log('Query result rows:', result.rows.length);
+    
+    if (result.rows.length > 0) {
+      console.log('First result row:', result.rows[0]);
+    }
+    
+    // Format the projects
+    const projects = result.rows.map(project => {
+      try {
+        return {
+          id: project.id,
+          title: project.title,
+          description: project.description,
+          thumbnail: project.thumbnail,
+          category: project.category,
+          academicYear: project.academic_year,
+          status: project.status,
+          files: project.files ? (typeof project.files === 'string' ? JSON.parse(project.files) : project.files) : null,
+          tags: project.tags ? (Array.isArray(project.tags) ? project.tags : project.tags.split(',')) : [],
+          videoUrl: project.video_url,
+          createdAt: project.created_at,
+          updatedAt: project.updated_at,
+          author: {
+            name: project.author_name,
+            email: project.author_email
+          }
+        };
+      } catch (error) {
+        console.error('Error formatting project:', error);
+        console.error('Problematic project data:', project);
+        return null;
+      }
+    }).filter(project => project !== null);
+    
+    console.log('Formatted projects:', projects);
     res.json(projects);
   } catch (error) {
-    console.error('Error fetching projects:', error);
-    res.status(500).json({ message: 'Error fetching projects', error: error.message });
+    console.error('Error in getProjects:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+      hint: error.hint
+    });
+    
+    // Check if it's a database connection error
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+      return res.status(500).json({ 
+        message: 'Database connection error',
+        error: 'Could not connect to the database'
+      });
+    }
+    
+    // Check if it's a table not found error
+    if (error.code === '42P01') {
+      return res.status(500).json({ 
+        message: 'Database table error',
+        error: 'Required tables do not exist'
+      });
+    }
+    
+    // Check if it's a syntax error
+    if (error.code === '42601') {
+      return res.status(500).json({ 
+        message: 'Database query error',
+        error: 'Invalid SQL syntax'
+      });
+    }
+    
+    // Check if it's an SSL error
+    if (error.code === '28000' || error.message.includes('SSL')) {
+      return res.status(500).json({ 
+        message: 'Database SSL error',
+        error: 'SSL connection failed'
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Error fetching projects', 
+      error: error.message,
+      details: error.detail
+    });
   }
 };
 
 // Get a single project
 const getProject = async (req, res) => {
   try {
+    console.log('Fetching project with ID:', req.params.id);
+    
     const result = await query(
       `SELECT 
         p.*,
@@ -251,6 +440,7 @@ const getProject = async (req, res) => {
     );
 
     if (result.rows.length === 0) {
+      console.log('Project not found with ID:', req.params.id);
       return res.status(404).json({ message: 'Project not found' });
     }
 
@@ -296,7 +486,7 @@ const getProject = async (req, res) => {
       id: projectData.id,
       title: projectData.title,
       description: projectData.description,
-      thumbnail: projectData.thumbnail, // Use the URL directly
+      thumbnail: projectData.thumbnail || defaultThumbnails[Math.floor(Math.random() * defaultThumbnails.length)],
       files: parsedFiles,
       tags: projectData.tags || [],  // Tags are now a native array
       createdAt: projectData.created_at,
@@ -334,7 +524,11 @@ const getProject = async (req, res) => {
     res.json(project);
   } catch (error) {
     console.error('Get project error:', error);
-    res.status(500).json({ message: 'Error fetching project' });
+    res.status(500).json({ 
+      message: 'Error fetching project',
+      error: error.message,
+      details: error.code
+    });
   }
 };
 
@@ -401,30 +595,66 @@ const addComment = async (req, res) => {
   }
 };
 
-// Get project statistics for dashboard
-const getProjectStats = async (req, res) => {
+// Get project statistics for admin dashboard
+export const getProjectStats = async (req, res) => {
   try {
-    console.log('Fetching project stats...');
-    const result = await query(`
-      SELECT 
-        COUNT(*) as total_projects,
-        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_projects,
-        COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_projects
-      FROM projects
-    `);
-    console.log('Query result:', result.rows[0]);
+    console.log('=== Fetching Project Statistics ===');
+    console.log('User making request:', req.user);
 
+    // Get total projects count
+    const totalResult = await query('SELECT COUNT(*) FROM projects');
+    const totalProjects = parseInt(totalResult.rows[0].count);
+    console.log('Total projects:', totalProjects);
+
+    // Get pending projects count
+    const pendingResult = await query(
+      'SELECT COUNT(*) FROM projects WHERE status = $1',
+      ['pending']
+    );
+    const pendingProjects = parseInt(pendingResult.rows[0].count);
+    console.log('Pending projects:', pendingProjects);
+
+    // Get approved projects count
+    const approvedResult = await query(
+      'SELECT COUNT(*) FROM projects WHERE status = $1',
+      ['approved']
+    );
+    const approvedProjects = parseInt(approvedResult.rows[0].count);
+    console.log('Approved projects:', approvedProjects);
+
+    // Get recent projects (last 5)
+    const recentResult = await query(
+      'SELECT p.*, u.name as author_name ' +
+      'FROM projects p ' +
+      'JOIN users u ON p.author_id = u.id ' +
+      'ORDER BY p.created_at DESC ' +
+      'LIMIT 5'
+    );
+    console.log('Recent projects:', recentResult.rows.length);
+
+    // Format response
     const stats = {
-      totalProjects: parseInt(result.rows[0].total_projects),
-      pendingProjects: parseInt(result.rows[0].pending_projects),
-      approvedProjects: parseInt(result.rows[0].approved_projects)
+      total: totalProjects,
+      pending: pendingProjects,
+      approved: approvedProjects,
+      recent: recentResult.rows.map(project => ({
+        id: project.id,
+        title: project.title,
+        author: project.author_name,
+        status: project.status,
+        created_at: project.created_at
+      }))
     };
-    console.log('Sending stats:', stats);
 
+    console.log('Sending stats:', stats);
     res.json(stats);
   } catch (error) {
-    console.error('Get project stats error:', error);
-    res.status(500).json({ message: 'Error fetching project statistics' });
+    console.error('Error fetching project stats:', error);
+    res.status(500).json({ 
+      message: 'Error fetching project statistics',
+      error: error.message,
+      details: error.detail || 'No additional details available'
+    });
   }
 };
 
@@ -493,13 +723,47 @@ const deleteProject = async (req, res) => {
   }
 };
 
+// Test endpoint to verify database state
+const testDatabaseState = async (req, res) => {
+  try {
+    console.log('Testing database state...');
+    
+    // Check all projects
+    const allProjects = await query('SELECT id, title, status FROM projects');
+    console.log('All projects:', allProjects.rows);
+    
+    // Check pending projects specifically
+    const pendingProjects = await query(
+      'SELECT id, title, status FROM projects WHERE status = $1',
+      ['pending']
+    );
+    console.log('Pending projects:', pendingProjects.rows);
+    
+    // Check user roles
+    const users = await query('SELECT id, email, role FROM users');
+    console.log('Users:', users.rows);
+    
+    res.json({
+      allProjects: allProjects.rows,
+      pendingProjects: pendingProjects.rows,
+      users: users.rows
+    });
+  } catch (error) {
+    console.error('Database test error:', error);
+    res.status(500).json({ 
+      message: 'Error testing database state',
+      error: error.message 
+    });
+  }
+};
+
 export {
   createProject,
   getProjects,
   getProject,
   updateProjectStatus,
   addComment,
-  getProjectStats,
   updateProject,
   deleteProject,
+  testDatabaseState
 };

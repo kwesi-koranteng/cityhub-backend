@@ -1,51 +1,114 @@
-import pkg from 'pg';
-const { Pool } = pkg;
+import pg from 'pg';
 import dotenv from 'dotenv';
+
+// Load environment variables
 dotenv.config();
 
-// --- Updated Pool creation ---
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+// Set default environment if not set
+const env = process.env.NODE_ENV || 'development';
+console.log('Current environment:', env);
+
+// Database configuration
+const config = {
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  port: parseInt(process.env.DB_PORT),
+  // SSL configuration for Render database
   ssl: {
     rejectUnauthorized: false,
-  },
+    require: true
+  }
+};
+
+// Validate required database configuration
+if (!config.host || !config.user || !config.password || !config.database || !config.port) {
+  throw new Error('Missing required database configuration. Please check your .env file.');
+}
+
+console.log('Database configuration:', {
+  host: config.host,
+  user: config.user,
+  database: config.database,
+  port: config.port,
+  ssl: config.ssl ? 'enabled' : 'disabled'
 });
 
-// Export ES module style
-export const query = (text, params) => pool.query(text, params);
+// Create a new pool
+const pool = new pg.Pool(config);
 
-// --- Update API base URL for production if needed ---
-export const API_BASE_URL = process.env.API_BASE_URL || "http://localhost:5000/api";
+// Connection status flags
+let connectionLogged = false;
+let schemaVerified = false;
 
-// Example using fetch
-const signup = async (name, email, password) => {
-  const res = await fetch(`${API_BASE_URL}/auth/signup`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, email, password }),
-  });
-  return res.json();
+// Test the connection
+pool.on('connect', () => {
+  if (!connectionLogged) {
+    console.log('Successfully connected to the database');
+    connectionLogged = true;
+  }
+});
+
+pool.on('error', (err) => {
+  console.error('Database pool error:', err);
+});
+
+// Verify projects table schema
+const verifyProjectsTable = async () => {
+  if (schemaVerified) {
+    return true;
+  }
+
+  try {
+    console.log('Verifying projects table schema...');
+    const result = await pool.query(`
+      SELECT column_name, data_type, character_maximum_length
+      FROM information_schema.columns
+      WHERE table_name = 'projects'
+    `);
+    
+    console.log('Projects table columns:', result.rows);
+    console.log('Projects table schema verified successfully');
+    schemaVerified = true;
+    return true;
+  } catch (error) {
+    console.error('Error verifying projects table:', error);
+    throw error;
+  }
 };
 
-const login = async (email, password) => {
-  const res = await fetch(`${API_BASE_URL}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  return res.json();
+// Test database connection
+const testConnection = async () => {
+  try {
+    const result = await pool.query('SELECT NOW() as current_time');
+    console.log('Database time:', result.rows[0].current_time);
+    await verifyProjectsTable();
+    console.log('Database connection verified.');
+  } catch (error) {
+    console.error('Database connection test failed:', error);
+    throw error;
+  }
 };
 
-// On the frontend, save token in localStorage or context
-// On the backend, retrieve token from request header (for example, in your authController)
-
-const uploadProject = async (formData, token) => {
-  const res = await fetch(`${API_BASE_URL}/projects`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${token}`,  // Pass token as Bearer token in the header
-    },
-    body: formData, // formData should include all fields and files
-  });
-  return res.json();
+// Query function
+const query = async (text, params) => {
+  try {
+    const start = Date.now();
+    const result = await pool.query(text, params);
+    const duration = Date.now() - start;
+    console.log('Executed query:', { text, duration, rows: result.rowCount });
+    return result;
+  } catch (error) {
+    console.error('Query error:', error);
+    throw error;
+  }
 };
+
+// Export
+export { pool, query, testConnection, verifyProjectsTable };
+
+// Test the connection on startup
+testConnection().catch(error => {
+  console.error('Failed to connect to the database:', error);
+});

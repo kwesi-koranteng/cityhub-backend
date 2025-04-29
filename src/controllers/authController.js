@@ -91,18 +91,38 @@ export const login = async (req, res) => {
 
 export const me = async (req, res) => {
   try {
+    if (!req.user || !req.user.id) {
+      console.log('No authenticated user found');
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+
+    console.log('Fetching user data for ID:', req.user.id);
+    
     const result = await query(
       'SELECT id, name, email, role FROM users WHERE id = $1',
       [req.user.id]
     );
 
     if (result.rows.length === 0) {
+      console.log('User not found with ID:', req.user.id);
       return res.status(404).json({ message: 'User not found' });
     }
 
-    res.json(result.rows[0]);
+    const user = result.rows[0];
+    console.log('User data retrieved:', {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role
+    });
+
+    res.json(user);
   } catch (error) {
     console.error('Get user error:', error);
-    res.status(500).json({ message: 'Error fetching user data' });
+    res.status(500).json({ 
+      message: 'Error fetching user data',
+      error: error.message,
+      details: error.code
+    });
   }
 };
