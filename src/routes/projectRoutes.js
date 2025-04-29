@@ -43,8 +43,8 @@ const debugMiddleware = (req, res, next) => {
 
 // Project routes
 router.get('/stats', auth, getProjectStats);
-router.get('/', auth, getProjects);
-router.get('/:id', auth, getProject);
+router.get('/', getProjects);
+router.get('/:id', getProject);
 router.post('/', 
   auth, 
   debugMiddleware,
