@@ -22,7 +22,7 @@ A Node.js backend for the CityHub project management platform, built with Expres
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/cityhub-backend.git
+git clone https://github.com/kwesi-koranteng/cityhub-backend.git
 cd cityhub-backend
 ```
 
@@ -36,8 +36,8 @@ yarn install
 3. Create a `.env` file in the root directory:
 ```env
 PORT=5000
-DATABASE_URL=postgresql://username:password@localhost:5432/cityhub
-JWT_SECRET=your_jwt_secret
+DB_HOST=dpg-d084tqc9c44c73bheua0-a.oregon-postgres.render.com
+JWT_SECRET=innovision_secret_key_2024
 NODE_ENV=development
 ```
 
@@ -77,20 +77,7 @@ The server will be available at `http://localhost:5000`
 - POST /api/projects/:id/comments - Add comment
 - GET /api/projects/:id/comments - Get project comments
 
-## Deployment
 
-### Deploying to Render
-
-1. Create a new Web Service on Render
-2. Connect your GitHub repository
-3. Configure the build settings:
-   - Build Command: `npm install`
-   - Start Command: `node src/app.js`
-4. Add environment variables:
-   - `PORT`: 5000
-   - `DATABASE_URL`: Your PostgreSQL database URL
-   - `JWT_SECRET`: Your JWT secret
-   - `NODE_ENV`: production
 
 ## Project Structure
 
@@ -109,18 +96,5 @@ src/
 - Node.js
 - Express
 - PostgreSQL
-- JWT
-- Multer
-- Bcrypt
 
-## Contributing
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the MIT License. 
